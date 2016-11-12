@@ -3,6 +3,7 @@
 #Fall 2016
 
 rm(list=ls()) #Clean workspace.
+library(stats)	#For KDE estimation in histograms.
 
 setwd("/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/penalized-matrix-decomp")
 
@@ -42,7 +43,33 @@ p = ncol(data)-2 					#Number of predictors (excl ID and year cols).
 ###   TOY EXAMPLES OF PENALIZED MATRIX DECOMPOSITION:            ###
 ####################################################################
 
-#Example 1: A simulated matrix with no missing values.
+#Example 1: Illustrate missing data imputation.
+
+#Set up X matrix.
+X = matrix(rnorm(20),nrow=5,ncol=4)
+n = nrow(X)
+p = ncol(X)
+
+#Randomly select values to set to NA.
+n.elems = nrow(X) * ncol(X)
+na.locs = sample(1:n.elems,size=n.elems*.5,replace=F)
+Xmiss = X
+Xmiss[na.locs] = NA
+
+K=ncol(X)
+lambdas = 10	#Want a large lambda, not trying to induce sparsity in features here.
+
+missing.test = sparse.matrix.factorization.rankK(X,K,
+					lambdaU= lambdas,
+					lambdaV=lambdas,
+					maxiter=20,tol=1E-6)
+
+Xmiss
+missing.test$X.rebuilt
+
+#------------------------------------------------------------
+
+#Example 2: A simulated matrix with no missing values.
 #Illustrates how decreasing lambda penalty terms selects features.
 
 X = matrix(rnorm(20),nrow=5,ncol=4)
@@ -55,9 +82,10 @@ c = 2
 lambdaU = c*sqrt(n)
 lambdaV = c*sqrt(p)
 
-K=ncol(X)						#Set a K value for testing.  We'll use Rank 1 here.
-K = 1
-lambdas = seq(2,0,by=-.25)	#Vector of lambdaU=lambdaV values.
+K = 1	#Set a K value for testing.  We'll use Rank 1 here.
+#K=ncol(X)						
+
+lambdas = seq(2,1,by=-.25)	#Vector of lambdaU=lambdaV values.
 tests = list()				#Empty vector for holding test cases.
 nonzero.x.cols = rep(0,length(lambdas))	#Empty vector for holding sparsity info.
 
@@ -72,33 +100,14 @@ for (i in 1:length(lambdas)){
 }
 
 #Display results.
-tests
+for (i in 1:length(tests)){
+	print(tests[[i]]$X.rebuilt)
+}
+
 cbind(lambdas,nonzero.x.cols)
 
-#------------------------------------------------------------
-#Example 2: Illustrate missing data imputation.
 
-#Set up X matrix.
-X = matrix(rnorm(20),nrow=5,ncol=4)
-n = nrow(X)
-p = ncol(X)
 
-#Randomly select values to set to NA.
-n.elems = nrow(X) * ncol(X)
-na.locs = sample(1:n.elems,size=n.elems*.3,replace=F)
-Xmiss = X
-Xmiss[na.locs] = NA
-
-K=ncol(X)
-lambdas = 10	#Want a large lambda, not trying to induce sparsity in features here.
-
-missing.test = sparse.matrix.factorization.rankK(X,K,
-					lambdaU= lambdas,
-					lambdaV=lambdas,
-					maxiter=20,tol=1E-6)
-
-Xmiss
-missing.test$X.rebuilt
 
 ##################################################################################
 ###    IMPUTING MISSING CONTINUOUS DATA USING PENALIZED MATRIX FACTORIZATION.  ###
@@ -148,7 +157,8 @@ colnames(X.filled) = colnames(X)
 head(X)
 head(X.filled)
 
-#DID NOT WORK, ended up with wrong scale on many variables.
+#Method fails, ended up with wrong scale on many variables.
+#This is a common problem, as noted by Hastie et al (1999), as scale 
 
 #----------------------------------
 #3. Impute missing variables in four related groups.
@@ -191,6 +201,42 @@ head(X.score)
 head(X.score.filled)
 
 #----------------------------------
+#4. Reasonableness checks on imputed data:
+
+#Histograms to compare distributions before and after imputing data.
+#SATs & ACTs:
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/SAT_ACT_hist.jpg')
+par(mfrow=c(2,3))
+for(i in 1:3){
+	hist(X.sat[,i],freq=F,main=paste(colnames(X.sat)[i]))
+	points(density(X.sat.filled[,i]),col='blue',type='l')
+}
+for(i in 1:3){
+	hist(X.act[,i],freq=F,main=paste(colnames(X.act)[i]))
+	points(density(X.act.filled[,i]),col='blue',type='l')	
+}
+dev.off()
+
+#GPA values:
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/GPA_hist.jpg')
+par(mfrow=c(2,3))
+for(i in 1:5){
+	hist(X.gpa[,i],freq=F,main=paste(colnames(X.gpa)[i]))
+	points(density(X.gpa.filled[,i]),col='blue',type='l')
+	main=paste(colnames(X.gpa[i]))
+}
+dev.off()
+
+#SCORE values:
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/SCORE_hist.jpg')
+par(mfrow=c(3,6))
+for(i in 1:18){
+	hist(X.score[,i],freq=F,main=paste(colnames(X.score)[i]))
+	points(density(X.score.filled[,i]),col='blue',type='l')
+}
+dev.off()
+
+#----------------------------------
 
 #Sanity check ranges of the output for each group.
 apply(X.sat, 2, function(x) range(x,na.rm=T))
@@ -206,8 +252,8 @@ apply(X.score, 2, function(x) range(x,na.rm=T)) #Some neg vals here, ask Jesse.
 apply(X.score.filled, 2, function(x) range(x))
 
 #----------------------------------
+#5. Reconstruct data frame with imputed values.
 
-#Reconstruct data frame with imputed values.
 # Construct an X version with just continuous vars,
 # and construct a Data version with all vars. 
 #Note: Cols not in same order as in original data set.
@@ -215,6 +261,13 @@ X.cont.new = cbind(X.gpa.filled[,1:3], X.score.filled, X.sat.filled, X.act.fille
 colnames(X.cont.new) = colnames(X)
 data.cont.new = cbind(X.cont.new,Y=data$Y)	#Save new imputed data.
 data.cont.old = cbind(X,Y=data$Y)			#Save old data (just continuous predictors).
+
+#Optional: Output the new imputed data as an R object.
+#save(data.cont.new,file="./Data/data_continuous_imputed.Rdata")
+
+#Preview reconstructed data.
+head(data.cont.old)
+head(round(data.cont.new,3))
 
 #----------------------------------
 
@@ -243,7 +296,7 @@ yhat.temp[is.na(yhat.missing)] = 999
 test.err.missing = sum(test.missing[,29] != yhat.temp) / length(yhat.filled)
 test.err.missing
 
-paste(sum(is.na(yhat.missing)),' values predicted as NA due to missing data.')
+paste(sum(is.na(yhat.missing)),'out of ',length(yhat.filled),' values predicted as NA due to missing data.')
 
 #----------------------------------
 #Test error for data with imputed values.
@@ -279,7 +332,7 @@ X = scale(X)
 #Will use a rank K factorization, so that we can get down to a single selected predictor.
 
 test = list()
-lambdas = c(1000,500,10,5,2.5,1,.5,0)
+lambdas = c(5,2.5,1.5,1)
 interesting.predictors = list()	#Empty list for holding interesting predictors for each lambda.
 num.nonzero.x.cols = rep(0,length(lambdas))	#Empty vector for holding number of interesting predictors.
 
@@ -295,13 +348,40 @@ for (i in 1:length(lambdas)){
 	Xnew.col.info = nonzero.col.info(Xnew)
 			
 	nonzero.x.cols[i] = Xnew.col.info$num.nonzero.cols
-	interesting.predictors[[i]] = colnames(X[,Xnew.col.info$nonzero.cols.idx])
+	interesting.predictors[[i]] = colnames(X)[Xnew.col.info$nonzero.cols.idx]
 }
 
 #Display results.
-lambdas
-interesting.predictors
+pred1 = unlist(interesting.predictors[[1]])
+pred2 = unlist(interesting.predictors[[2]])
+pred3 = unlist(interesting.predictors[[3]])
+pred4 = unlist(interesting.predictors[[4]])
 
+#Fill in all unused values with NA, so can cbind results for easy viewing.
+length(pred2) = length(pred3) = length(pred4) = length(pred1)
+
+output = cbind(pred1,pred2,pred3,pred4)
+output = rbind(lambdas=lambdas[1:4],output)
+output #View results
+
+#-----------------------------------------
+#Try another logistic regression model with one of the variable selection results.
+
+#The pred2 list looks promising; fit this to a training set, then predict to a test set,
+#using the imputed data.
+pred = pred2
+selected.cols = c(pred[!is.na(pred)],"Y") #Must include y.
+
+train.filled.2 = data.cont.new[train.rows, selected.cols]
+test.filled.2 = data.cont.new[-train.rows, selected.cols]
+
+#Test error for data with imputed values.
+lm.filled.2 = glm(Y ~ ., family=binomial,data=as.data.frame(train.filled.2))
+pred.filled.2 = predict.glm(lm.filled.2,newdata=as.data.frame(test.filled.2[,-29]),type='response')
+yhat.filled.2 = ifelse(pred.filled.2 >= .5,1,0)
+
+test.err.filled.2 = sum(test.filled.2[,length(selected.cols)] != yhat.filled.2) / length(yhat.filled.2)
+test.err.filled.2
 
 
 
