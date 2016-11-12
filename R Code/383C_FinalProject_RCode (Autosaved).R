@@ -148,7 +148,8 @@ colnames(X.filled) = colnames(X)
 head(X)
 head(X.filled)
 
-#DID NOT WORK, ended up with wrong scale on many variables.
+#Method fails, ended up with wrong scale on many variables.
+#This is a common problem, as noted by Hastie et al (1999), as scale 
 
 #----------------------------------
 #3. Impute missing variables in four related groups.
