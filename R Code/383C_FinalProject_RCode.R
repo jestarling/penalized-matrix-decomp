@@ -23,21 +23,24 @@ load("./Data/data.Rdata")
 #------------------------------------------------------------
 #DATA PROCESSING:
 
-#Create Y variable as Y=1 (pass), Y=0 (fail) based on Math Grade >= C.
-passing.grades = c("A+","A","A-","B+","B","B-","C+","C","C-")
-data$Y = ifelse(data$Math.Grade %in% passing.grades,1,ifelse(data$Math.Grade=="",NA,0))
+#Create Y variable as Y=1 (pass), Y=0 (fail) based on Math.GPA >= 1.5.
+#Note - this is already in data set, named Math.P.F.
+data$Y = data$Math.P.F
+
+#passing.grades = c("A+","A","A-","B+","B","B-","C+","C","C-")
+#data$Y = ifelse(data$Math.Grade %in% passing.grades,1,ifelse(data$Math.Grade=="",NA,0))
 
 #Restrict data set to only cases where Y != NA, ie where pass/fail known.
 data = data[!is.na(data$Y),]
 
-#Create a subset of just the calculus classes 
-data.calc = data[data$Math.Course %in% c("408C","408N","408K"),]
+#Restrict data to just the calculus classes 408C, 408N, 408K.
+data = data[data$Math.Course %in% c("408C","408N","408K"),]
 
 #Set up some initial dimensional information.
 n = nrow(data)						#Total number of obs for both years combined.
 n2014 = sum(data$YEAR==2014)		#Total number of obs for 2014 only.
 n2015 = nrow(data$YEAR==2015)		#Total number of obs for 2015 only.
-p = ncol(data)-2 					#Number of predictors (excl ID and year cols).
+p = ncol(data)-5 					#Number of predictors (excl ID, Year, Math.GPA, Math.P.F., Y).
 
 ####################################################################
 ###   TOY EXAMPLES OF PENALIZED MATRIX DECOMPOSITION:            ###
@@ -136,6 +139,12 @@ X = data.matrix(data[,cols.continuous.all])  #Subset of just the desired continu
 	#each which is related to a certain
 	#type of test, it makes sense to work in groups.
 
+#Some info about how much data is missing:
+nrow(X) * ncol(X) 	#Total data points in X.
+sum(is.na(X))		#Total points missing in X.
+sum(is.na(X)) / (nrow(X) * ncol(X)) #Proportion of data missing in X.
+
+
 #----------------------------------
 #2. Try imputing all missing values for continuous columns at once.
 
@@ -183,7 +192,7 @@ head(X.act)
 head(X.act.filled)
 
 #GPA VALUES:
-X.gpa = data.matrix(data[,c(13:16,52)]) #Just the PGPA variables.
+X.gpa = data.matrix(data[,c(13:16,52)]) #Just the PGPA & UT.GPA variables.
 pmd.gpa = sparse.matrix.factorization.rankK(X.gpa,K=ncol(X.gpa),lambdaU=1000,lambdaV=1000,maxiter=20)
 X.gpa.filled = pmd.gpa$X.rebuilt
 colnames(X.gpa.filled) = colnames(X.gpa)
@@ -246,10 +255,10 @@ apply(X.act, 2, function(x) range(x,na.rm=T))
 apply(X.act.filled, 2, function(x) range(x))
 
 apply(X.gpa, 2, function(x) range(x,na.rm=T))
-apply(X.gpa.filled, 2, function(x) range(x))
+apply(X.gpa.filled, 2, function(x) round(range(x),2))
 
 apply(X.score, 2, function(x) range(x,na.rm=T)) #Some neg vals here, ask Jesse.
-apply(X.score.filled, 2, function(x) range(x))
+apply(X.score.filled, 2, function(x) round(range(x),2))
 
 #----------------------------------
 #5. Reconstruct data frame with imputed values.
@@ -293,10 +302,10 @@ yhat.missing = ifelse(pred.missing >= .5,1,0)
 
 yhat.temp = yhat.missing	#To handle values that are predicted as NA due to missing data.
 yhat.temp[is.na(yhat.missing)] = 999
-test.err.missing = sum(test.missing[,29] != yhat.temp) / length(yhat.filled)
+test.err.missing = sum(test.missing[,29] != yhat.temp) / length(yhat.missing)
 test.err.missing
 
-paste(sum(is.na(yhat.missing)),'out of ',length(yhat.filled),' values predicted as NA due to missing data.')
+paste(sum(is.na(yhat.missing)),'out of ',length(yhat.missing),' values predicted as NA due to missing data.')
 
 #----------------------------------
 #Test error for data with imputed values.
@@ -325,20 +334,20 @@ test.err.filled
 #will analyze all continuous predictors together.
 
 cols.continuous.subset = c(13,14,15,16,20,30,39,40,41,42,43,44)
-X = data.matrix(data[,cols.continuous.subset])  #Subset of just the desired continuous data cols.
-X = scale(X)
+X.subset = data.matrix(data[,cols.continuous.subset])  #Subset of just the desired continuous data cols.
+X.subset = scale(X.subset)
 
 #Impute missing values for all continuous predictors at once.  Vary the values of lambda.
 #Will use a rank K factorization, so that we can get down to a single selected predictor.
 
-test = list()
+tests = list()
 lambdas = c(5,2.5,1.5,1)
 interesting.predictors = list()	#Empty list for holding interesting predictors for each lambda.
 num.nonzero.x.cols = rep(0,length(lambdas))	#Empty vector for holding number of interesting predictors.
 
 #Loop through test cases.
 for (i in 1:length(lambdas)){
-	tests[[i]] = sparse.matrix.factorization.rankK(X,K=1,
+	tests[[i]] = sparse.matrix.factorization.rankK(X.subset,K=1,
 					lambdaU= lambdas[i],
 					lambdaV=lambdas[i],
 					maxiter=20,tol=1E-6)
@@ -347,8 +356,8 @@ for (i in 1:length(lambdas)){
 	
 	Xnew.col.info = nonzero.col.info(Xnew)
 			
-	nonzero.x.cols[i] = Xnew.col.info$num.nonzero.cols
-	interesting.predictors[[i]] = colnames(X)[Xnew.col.info$nonzero.cols.idx]
+	nonzero.x.cols = Xnew.col.info$num.nonzero.cols
+	interesting.predictors[[i]] = colnames(X.subset)[Xnew.col.info$nonzero.cols.idx]
 }
 
 #Display results.
