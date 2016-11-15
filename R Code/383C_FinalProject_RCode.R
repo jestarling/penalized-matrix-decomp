@@ -278,6 +278,12 @@ data.cont.old = cbind(X,Y=data$Y)			#Save old data (just continuous predictors).
 head(data.cont.old)
 head(round(data.cont.new,3))
 
+#Reconstruct entire data set and output, including new imputed variables.
+#(Includes categorical data also.)
+data.categorical = data[,-c(cols.continuous.all)][,1:34]	#Save continuous vars, minus y col.
+data.all.new = cbind(data.categorical,data.cont.new)		#Cbind data set back together.
+
+
 #----------------------------------
 
 #Compare the results of a logistic regression before and after data imputation.
