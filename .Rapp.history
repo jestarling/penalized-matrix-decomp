@@ -1,0 +1,1075 @@
+rm(list=ls()) #Clean workspace.#
+library(stats)	#For KDE estimation in histograms.#
+#
+setwd("/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/penalized-matrix-decomp")#
+#
+source(file="./R Code/Penalized_Matrix_Decomp_Functions.R")	#Read in Penalized Matrix Decomp functions.#
+#
+#------------------------------------------------------------#
+#DATA LOADING:#
+#
+#Read in data.#
+data2014 = read.csv(file="./Data/2014FA_AllData.csv",header=T)#
+data2015 = read.csv(file="./Data/2015FA_AllData.csv",header=T)#
+data = rbind(data2014,data2015)#
+#
+#Alternative: Load Rdata object directly.#
+load("./Data/data.Rdata")#
+#
+#------------------------------------------------------------#
+#DATA PROCESSING:#
+#
+#Create Y variable as Y=1 (pass), Y=0 (fail) based on Math.GPA >= 1.5.#
+#Note - this is already in data set, named Math.P.F.#
+data$Y = data$Math.P.F#
+#
+#passing.grades = c("A+","A","A-","B+","B","B-","C+","C","C-")#
+#data$Y = ifelse(data$Math.Grade %in% passing.grades,1,ifelse(data$Math.Grade=="",NA,0))#
+#
+#Restrict data set to only cases where Y != NA, ie where pass/fail known.#
+data = data[!is.na(data$Y),]#
+#
+#Restrict data to just the calculus classes 408C, 408N, 408K.#
+data = data[data$Math.Course %in% c("408C","408N","408K"),]#
+#
+#Set up some initial dimensional information.#
+n = nrow(data)						#Total number of obs for both years combined.#
+n2014 = sum(data$YEAR==2014)		#Total number of obs for 2014 only.#
+n2015 = nrow(data$YEAR==2015)		#Total number of obs for 2015 only.#
+p = ncol(data)-5 					#Number of predictors (excl ID, Year, Math.GPA, Math.P.F., Y).#
+#
+#####################################################################
+###   TOY EXAMPLES OF PENALIZED MATRIX DECOMPOSITION:            ####
+#####################################################################
+#
+#Example 1: Illustrate missing data imputation.#
+#
+#Set up X matrix.#
+X = matrix(rnorm(20),nrow=5,ncol=4)#
+n = nrow(X)#
+p = ncol(X)#
+#
+#Randomly select values to set to NA.#
+n.elems = nrow(X) * ncol(X)#
+na.locs = sample(1:n.elems,size=n.elems*.5,replace=F)#
+Xmiss = X#
+Xmiss[na.locs] = NA#
+#
+K=ncol(X)#
+lambdas = 10	#Want a large lambda, not trying to induce sparsity in features here.#
+#
+missing.test = sparse.matrix.factorization.rankK(X,K,#
+					lambdaU= lambdas,#
+					lambdaV=lambdas,#
+					maxiter=20,tol=1E-6)#
+#
+Xmiss#
+missing.test$X.rebuilt#
+#
+#------------------------------------------------------------#
+#
+#Example 2: A simulated matrix with no missing values.#
+#Illustrates how decreasing lambda penalty terms selects features.#
+#
+X = matrix(rnorm(20),nrow=5,ncol=4)#
+n = nrow(X)#
+p = ncol(X)#
+#
+#Paper notes that if you want u and v to be equally sparse, set a constant c,#
+#and let lambdaU = c*sqrt(n), and let lambdaV = c * sqrt(p)#
+c = 2#
+lambdaU = c*sqrt(n)#
+lambdaV = c*sqrt(p)#
+#
+K = 1	#Set a K value for testing.  We'll use Rank 1 here.#
+#K=ncol(X)						#
+#
+lambdas = seq(2,1,by=-.25)	#Vector of lambdaU=lambdaV values.#
+tests = list()				#Empty vector for holding test cases.#
+nonzero.x.cols = rep(0,length(lambdas))	#Empty vector for holding sparsity info.#
+#
+#Loop through test cases.#
+for (i in 1:length(lambdas)){#
+	tests[[i]] = sparse.matrix.factorization.rankK(X,K,#
+					lambdaU= lambdas[i],#
+					lambdaV=lambdas[i],#
+					maxiter=20,tol=1E-6)#
+	Xnew = tests[[i]]$X.rebuilt				#
+	nonzero.x.cols[i] = nonzero.col.info(Xnew)$num.nonzero.cols#
+}#
+#
+#Display results.#
+for (i in 1:length(tests)){#
+	print(tests[[i]]$X.rebuilt)#
+}#
+#
+cbind(lambdas,nonzero.x.cols)#
+###################################################################################
+###    IMPUTING MISSING CONTINUOUS DATA USING PENALIZED MATRIX FACTORIZATION.  ####
+###################################################################################
+#
+#-----------------------------------------------------------------#
+#IMPUTING MISSING CONTINUOUS DATA USING PENALIZED MATRIX FACTORIZATION.#
+#
+#----------------------------------#
+#1. Identify continuous predictors to be included in the imputation.#
+head(data)#
+#
+#cols.continuous.subset = c(13,14,15,16,20,30,39,40,41,42,43,44)#
+#
+cols.continuous.all = c(13:16,20:28,30:38,39:44)#
+X = data.matrix(data[,cols.continuous.all])  #Subset of just the desired continuous data cols.#
+#
+#Cols.continuous.all includes 21-28 and 31-38, which subset does not.#
+#These cols include the breakdowns of ALEKS-1 and ALEKS-H.#
+#
+	#NOTE: This technique works well when predictors have same scale.  #
+	#If predictors have vastly different scales, X must be scaled #
+	#first to ensure logical predictions.#
+#
+	#Since we are working with a few different groups of predictors, #
+	#each which is related to a certain#
+	#type of test, it makes sense to work in groups.#
+#
+#Some info about how much data is missing:#
+nrow(X) * ncol(X) 	#Total data points in X.#
+sum(is.na(X))		#Total points missing in X.#
+sum(is.na(X)) / (nrow(X) * ncol(X)) #Proportion of data missing in X.#
+#----------------------------------#
+#2. Try imputing all missing values for continuous columns at once.#
+#
+#Scale and center data.  (By hand, so can back-transform.)#
+col.means = colMeans(X,na.rm=T)#
+col.sdevs = sqrt(apply(X,2,function(a) var(a,na.rm=T)))#
+X.scaled = scale(X)#
+#
+#Impute missing values for all continuous predictors at once.#
+pmd = sparse.matrix.factorization.rankK(X.scaled,K=ncol(X),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.filled.scaled = pmd$X.rebuilt#
+#
+head(X.scaled)#
+head(X.filled.scaled)#
+#
+#Reverse scaling.#
+X.filled = (X.filled.scaled * col.sdevs) + col.means#
+colnames(X.filled) = colnames(X)#
+head(X)#
+head(X.filled)#
+#
+#Method fails, ended up with wrong scale on many variables.#
+#This is a common problem, as noted by Hastie et al (1999), as scale #
+#
+#----------------------------------#
+#3. Impute missing variables in four related groups.#
+# 	These related groups are of similar scale.#
+#
+#SAT VALUES:#
+X.sat = data.matrix(data[,39:41]) #Just the SAT variables.#
+pmd.sat = sparse.matrix.factorization.rankK(X.sat,K=ncol(X.sat),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.sat.filled = pmd.sat$X.rebuilt#
+colnames(X.sat.filled) = colnames(X.sat)#
+#
+head(X.sat)#
+head(X.sat.filled)#
+#
+#ACT VALUES:#
+X.act = data.matrix(data[,42:44]) #Just the SAT variables.#
+pmd.act = sparse.matrix.factorization.rankK(X.act,K=ncol(X.act),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.act.filled = pmd.act$X.rebuilt#
+colnames(X.act.filled) = colnames(X.act)#
+#
+head(X.act)#
+head(X.act.filled)#
+#
+#GPA VALUES:#
+X.gpa = data.matrix(data[,c(13:16,52)]) #Just the PGPA & UT.GPA variables.#
+pmd.gpa = sparse.matrix.factorization.rankK(X.gpa,K=ncol(X.gpa),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.gpa.filled = pmd.gpa$X.rebuilt#
+colnames(X.gpa.filled) = colnames(X.gpa)#
+#
+head(X.gpa)#
+head(X.gpa.filled)#
+#
+#SCORE VALUES:#
+X.score = data.matrix(data[,c(20:28,30:38)]) #Just the PGPA variables.#
+pmd.score = sparse.matrix.factorization.rankK(X.score,K=ncol(X.score),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.score.filled = pmd.score$X.rebuilt#
+colnames(X.score.filled) = colnames(X.score)#
+#
+head(X.score)#
+head(X.score.filled)#
+#
+#----------------------------------#
+#4. Reasonableness checks on imputed data:#
+#
+#Histograms to compare distributions before and after imputing data.#
+#SATs & ACTs:#
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/SAT_ACT_hist.jpg')#
+par(mfrow=c(2,3))#
+for(i in 1:3){#
+	hist(X.sat[,i],freq=F,main=paste(colnames(X.sat)[i]))#
+	points(density(X.sat.filled[,i]),col='blue',type='l')#
+}#
+for(i in 1:3){#
+	hist(X.act[,i],freq=F,main=paste(colnames(X.act)[i]))#
+	points(density(X.act.filled[,i]),col='blue',type='l')	#
+}#
+dev.off()#
+#
+#GPA values:#
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/GPA_hist.jpg')#
+par(mfrow=c(2,3))#
+for(i in 1:5){#
+	hist(X.gpa[,i],freq=F,main=paste(colnames(X.gpa)[i]))#
+	points(density(X.gpa.filled[,i]),col='blue',type='l')#
+	main=paste(colnames(X.gpa[i]))#
+}#
+dev.off()#
+#
+#SCORE values:#
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/SCORE_hist.jpg')#
+par(mfrow=c(3,6))#
+for(i in 1:18){#
+	hist(X.score[,i],freq=F,main=paste(colnames(X.score)[i]))#
+	points(density(X.score.filled[,i]),col='blue',type='l')#
+}#
+dev.off()#
+#
+#----------------------------------#
+#
+#Sanity check ranges of the output for each group.#
+apply(X.sat, 2, function(x) range(x,na.rm=T))#
+apply(X.sat.filled, 2, function(x) range(x))#
+#
+apply(X.act, 2, function(x) range(x,na.rm=T))#
+apply(X.act.filled, 2, function(x) range(x))#
+#
+apply(X.gpa, 2, function(x) range(x,na.rm=T))#
+apply(X.gpa.filled, 2, function(x) round(range(x),2))#
+#
+apply(X.score, 2, function(x) range(x,na.rm=T)) #Some neg vals here, ask Jesse.#
+apply(X.score.filled, 2, function(x) round(range(x),2))#
+#
+#----------------------------------#
+#5. Reconstruct data frame with imputed values.#
+#
+# Construct an X version with just continuous vars,#
+# and construct a Data version with all vars. #
+#Note: Cols not in same order as in original data set.#
+X.cont.new = cbind(X.gpa.filled[,1:3], X.score.filled, X.sat.filled, X.act.filled, X.gpa.filled[,4])#
+colnames(X.cont.new) = colnames(X)#
+data.cont.new = cbind(X.cont.new,Y=data$Y)	#Save new imputed data.#
+data.cont.old = cbind(X,Y=data$Y)			#Save old data (just continuous predictors).#
+#
+#Optional: Output the new imputed data as an R object.#
+#save(data.cont.new,file="./Data/data_continuous_imputed.Rdata")#
+#
+#Preview reconstructed data.#
+head(data.cont.old)#
+head(round(data.cont.new,3))#
+#
+#Reconstruct entire data set and output, including new imputed variables.#
+#(Includes categorical data also.)#
+data.categorical = data[,-c(cols.continuous.all)][,1:34]	#Save continuous vars, minus y col.#
+data.all.new = cbind(data.categorical,data.cont.new)		#Cbind data set back together.#
+save(data.all.new,file='./Data/data.all.new.Rdata')#
+#
+#----------------------------------#
+#
+#Compare the results of a logistic regression before and after data imputation.#
+#This quick check involves holding out 30% of the data, and obtaining#
+#a 'test error' for the held out 30%.  This is performed for the continuous variables #
+#only, with and without imputed data.#
+#
+train.rows = sample(nrow(X),nrow(X)*.7,replace=F)#
+#
+train.missing = data.cont.old[train.rows,]#
+test.missing = data.cont.old[-train.rows,]#
+#
+train.filled = data.cont.new[train.rows,]#
+test.filled = data.cont.new[-train.rows,]#
+#
+#----------------------------------#
+#
+#Test error for data with missing values.#
+lm.with.missing = glm(Y ~ ., family=binomial,data=as.data.frame(train.missing))#
+pred.missing = predict.glm(lm.with.missing,newdata=as.data.frame(test.missing[,-29]),type='response')#
+yhat.missing = ifelse(pred.missing >= .5,1,0)#
+#
+yhat.temp = yhat.missing	#To handle values that are predicted as NA due to missing data.#
+yhat.temp[is.na(yhat.missing)] = 999#
+test.err.missing = sum(test.missing[,29] != yhat.temp) / length(yhat.missing)#
+test.err.missing#
+#
+paste(sum(is.na(yhat.missing)),'out of ',length(yhat.missing),' values predicted as NA due to missing data.')#
+#
+#----------------------------------#
+#Test error for data with imputed values.#
+lm.filled = glm(Y ~ ., family=binomial,data=as.data.frame(train.filled))#
+pred.filled = predict.glm(lm.filled,newdata=as.data.frame(test.filled[,-29]),type='response')#
+yhat.filled = ifelse(pred.filled >= .5,1,0)#
+#
+test.err.filled = sum(test.filled[,29] != yhat.filled) / length(yhat.filled)#
+test.err.filled#
+#
+#Conclusion: Imputing the missing data using penalized matrix decomposition drastically#
+#decreased the logistic regression test error.#
+#
+#A few things:#
+#No additional model fitting or analysis has been done.  Model could of course be improved in many ways.#
+#Could look at using this functionality for variable selection, as well.#
+#
+####################################################################
+###   COMPARING WITH IMPUTATION USING PREDICTOR MEANS.          ####
+####################################################################
+#
+#Create a data set of just continuous predictors, which will be used#
+#to impute the means of the missing data.#
+data.cont.means = data[,c(13:16,20:28,30:38,39:44,63)]#
+#Need to strip the 50N out of TRIG.H and call it 50 to calculate means.#
+data.cont.means$TRIG.H[data.cont.means$TRIG.H=="50N"] = 50#
+data.cont.means$TRIG.H = as.numeric(data.cont.means$TRIG.H) #Convert from factor to numeric.#
+#
+#Calculate mean for each continuous predictor.#
+col.means = colMeans(data.cont.means,na.rm=T)#
+#
+#Replace all NA values in each column with the respective column mean.#
+for (i in 1:ncol(data.cont.means)-1){ #-1 because excluding Y, which has no missing values.#
+#
+	temp = data.cont.means[,i]#
+	if (sum(is.na(temp))>0){#
+		temp[is.na(temp)] = col.means[i]#
+		data.cont.means[,i] = temp#
+	}#
+}#
+#
+#Perform logistic regression using means-imputed data set, for comparison.#
+#
+#Set up test and train data sets.#
+train.means = data.cont.means[train.rows,]#
+test.means = data.cont.means[-train.rows,]#
+#
+#Test error for data with mean-imputed values.#
+lm.means = glm(Y ~ ., family=binomial,data=as.data.frame(train.means))#
+pred.means = predict.glm(lm.means,newdata=as.data.frame(test.means[,-29]),type='response')#
+yhat.means = ifelse(pred.means >= .5,1,0)#
+#
+test.err.means = sum(test.means[,29] != yhat.means) / length(yhat.means)#
+test.err.means
+?mode
+#----------------------------------#
+#1. Identify continuous predictors to be included in the imputation.#
+head(data)#
+#
+#cols.continuous.subset = c(13,14,15,16,20,30,39,40,41,42,43,44)#
+#
+cols.continuous.all = c(13:16,20:28,30:38,39:44)
+cols.continuous.all = c(13:16,20:28,30:38,39:44,45:51)  #45-51 are AP scores.#
+X = data.matrix(data[,cols.continuous.all])
+head(X)
+class(X$AP.BIO)
+class(X[,51])
+dim(X)
+class(X[,35])
+#Some info about how much data is missing:#
+nrow(X) * ncol(X) 	#Total data points in X.#
+sum(is.na(X))		#Total points missing in X.#
+sum(is.na(X)) / (nrow(X) * ncol(X)) #Proportion of data missing in X.#
+#----------------------------------#
+#2. Try imputing all missing values for continuous columns at once.#
+#
+#Scale and center data.  (By hand, so can back-transform.)#
+col.means = colMeans(X,na.rm=T)#
+col.sdevs = sqrt(apply(X,2,function(a) var(a,na.rm=T)))#
+X.scaled = scale(X)#
+#
+#Impute missing values for all continuous predictors at once.#
+pmd = sparse.matrix.factorization.rankK(X.scaled,K=ncol(X),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.filled.scaled = pmd$X.rebuilt#
+#
+head(X.scaled)#
+head(X.filled.scaled)#
+#
+#Reverse scaling.#
+X.filled = (X.filled.scaled * col.sdevs) + col.means#
+colnames(X.filled) = colnames(X)#
+head(X)#
+head(X.filled)
+head(X)
+dim(X)
+X.gpa = data.matrix(data[,c(13:16,45:51)]) #Just the PGPA.
+head(X.gpa)
+X.gpa = data.matrix(data[,c(13:16,45:51)]) #Just the PGPA.#
+pmd.gpa = sparse.matrix.factorization.rankK(X.gpa,K=ncol(X.gpa),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.gpa.filled = pmd.gpa$X.rebuilt#
+colnames(X.gpa.filled) = colnames(X.gpa)#
+#
+head(X.gpa)#
+head(X.gpa.filled)
+#SCORE VALUES:#
+X.score = data.matrix(data[,c(20:28,30:38)]) #Just the PGPA variables.#
+pmd.score = sparse.matrix.factorization.rankK(X.score,K=ncol(X.score),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.score.filled = pmd.score$X.rebuilt#
+colnames(X.score.filled) = colnames(X.score)#
+#
+head(X.score)#
+head(X.score.filled)
+head(X.gpa)
+dim(X.gpa)
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/GPA_hist.jpg')#
+par(mfrow=c(3,4))#
+for(i in 1:5){#
+	hist(X.gpa[,i],freq=F,main=paste(colnames(X.gpa)[i]))#
+	points(density(X.gpa.filled[,i]),col='blue',type='l')#
+	main=paste(colnames(X.gpa[i]))#
+}#
+dev.off()
+par(mfrow=c(3,4))#
+for(i in 1:5){#
+	hist(X.gpa[,i],freq=F,main=paste(colnames(X.gpa)[i]))#
+	points(density(X.gpa.filled[,i]),col='blue',type='l')#
+	main=paste(colnames(X.gpa[i]))#
+}
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/GPA_hist.jpg')#
+par(mfrow=c(3,4))#
+for(i in 1:11){#
+	hist(X.gpa[,i],freq=F,main=paste(colnames(X.gpa)[i]))#
+	points(density(X.gpa.filled[,i]),col='blue',type='l')#
+	main=paste(colnames(X.gpa[i]))#
+}#
+dev.off()
+head(X.gpa)
+unique(X.gpa[,11])
+#----------------------------------#
+#1. Identify continuous predictors to be included in the imputation.#
+head(data)#
+#
+#cols.continuous.subset = c(13,14,15,16,20,30,39,40,41,42,43,44)#
+#
+cols.continuous.all = c(13:16,20:28,30:38,39:44,45:50)  #45-51 are AP scores.#
+X = data.matrix(data[,cols.continuous.all])  #Subset of just the desired continuous data cols.#
+#
+#Cols.continuous.all includes 21-28 and 31-38, which subset does not.#
+#These cols include the breakdowns of ALEKS-1 and ALEKS-H.#
+#
+	#NOTE: This technique works well when predictors have same scale.  #
+	#If predictors have vastly different scales, X must be scaled #
+	#first to ensure logical predictions.#
+#
+	#Since we are working with a few different groups of predictors, #
+	#each which is related to a certain#
+	#type of test, it makes sense to work in groups.#
+#
+#Some info about how much data is missing:#
+nrow(X) * ncol(X) 	#Total data points in X.#
+sum(is.na(X))		#Total points missing in X.#
+sum(is.na(X)) / (nrow(X) * ncol(X)) #Proportion of data missing in X.#
+#----------------------------------#
+#2. Try imputing all missing values for continuous columns at once.#
+#
+#Scale and center data.  (By hand, so can back-transform.)#
+col.means = colMeans(X,na.rm=T)#
+col.sdevs = sqrt(apply(X,2,function(a) var(a,na.rm=T)))#
+X.scaled = scale(X)#
+#
+#Impute missing values for all continuous predictors at once.#
+pmd = sparse.matrix.factorization.rankK(X.scaled,K=ncol(X),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.filled.scaled = pmd$X.rebuilt#
+#
+head(X.scaled)#
+head(X.filled.scaled)#
+#
+#Reverse scaling.#
+X.filled = (X.filled.scaled * col.sdevs) + col.means#
+colnames(X.filled) = colnames(X)#
+head(X)#
+head(X.filled)#
+#
+#Method fails, ended up with wrong scale on many variables.#
+#This is a common problem, as noted by Hastie et al (1999), as scale #
+#
+#----------------------------------#
+#3. Impute missing variables in four related groups.#
+# 	These related groups are of similar scale.#
+#
+#SAT VALUES:#
+X.sat = data.matrix(data[,39:41]) #Just the SAT variables.#
+pmd.sat = sparse.matrix.factorization.rankK(X.sat,K=ncol(X.sat),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.sat.filled = pmd.sat$X.rebuilt#
+colnames(X.sat.filled) = colnames(X.sat)#
+#
+head(X.sat)#
+head(X.sat.filled)#
+#
+#ACT VALUES:#
+X.act = data.matrix(data[,42:44]) #Just the SAT variables.#
+pmd.act = sparse.matrix.factorization.rankK(X.act,K=ncol(X.act),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.act.filled = pmd.act$X.rebuilt#
+colnames(X.act.filled) = colnames(X.act)#
+#
+head(X.act)#
+head(X.act.filled)#
+#
+#GPA & AP SCORE VALUES:#
+X.gpa = data.matrix(data[,c(13:16,45:50)]) #Just the PGPA.#
+pmd.gpa = sparse.matrix.factorization.rankK(X.gpa,K=ncol(X.gpa),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.gpa.filled = pmd.gpa$X.rebuilt#
+colnames(X.gpa.filled) = colnames(X.gpa)#
+#
+head(X.gpa)#
+head(X.gpa.filled)#
+#
+#SCORE VALUES:#
+X.score = data.matrix(data[,c(20:28,30:38)]) #Just the PGPA variables.#
+pmd.score = sparse.matrix.factorization.rankK(X.score,K=ncol(X.score),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.score.filled = pmd.score$X.rebuilt#
+colnames(X.score.filled) = colnames(X.score)#
+#
+head(X.score)#
+head(X.score.filled)#
+#
+#----------------------------------#
+#4. Reasonableness checks on imputed data:#
+#
+#Histograms to compare distributions before and after imputing data.#
+#SATs & ACTs:#
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/SAT_ACT_hist.jpg')#
+par(mfrow=c(2,3))#
+for(i in 1:3){#
+	hist(X.sat[,i],freq=F,main=paste(colnames(X.sat)[i]))#
+	points(density(X.sat.filled[,i]),col='blue',type='l')#
+}#
+for(i in 1:3){#
+	hist(X.act[,i],freq=F,main=paste(colnames(X.act)[i]))#
+	points(density(X.act.filled[,i]),col='blue',type='l')	#
+}#
+dev.off()#
+#
+#GPA values:#
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/GPA_hist.jpg')#
+par(mfrow=c(3,4))#
+for(i in 1:11){#
+	hist(X.gpa[,i],freq=F,main=paste(colnames(X.gpa)[i]))#
+	points(density(X.gpa.filled[,i]),col='blue',type='l')#
+	main=paste(colnames(X.gpa[i]))#
+}#
+dev.off()#
+#
+#SCORE values:#
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/SCORE_hist.jpg')#
+par(mfrow=c(3,6))#
+for(i in 1:18){#
+	hist(X.score[,i],freq=F,main=paste(colnames(X.score)[i]))#
+	points(density(X.score.filled[,i]),col='blue',type='l')#
+}#
+dev.off()
+#GPA values:#
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/GPA_hist.jpg')#
+par(mfrow=c(3,4))#
+for(i in 1:10){#
+	hist(X.gpa[,i],freq=F,main=paste(colnames(X.gpa)[i]))#
+	points(density(X.gpa.filled[,i]),col='blue',type='l')#
+	main=paste(colnames(X.gpa[i]))#
+}#
+dev.off()
+par(mfrow=c(3,4))#
+for(i in 1:10){#
+	hist(X.gpa[,i],freq=F,main=paste(colnames(X.gpa)[i]))#
+	points(density(X.gpa.filled[,i]),col='blue',type='l')#
+	main=paste(colnames(X.gpa[i]))#
+}
+apply(X.gpa, 2, function(x) range(x,na.rm=T))#
+apply(X.gpa.filled, 2, function(x) round(range(x),2))
+# Construct an X version with just continuous vars,#
+# and construct a Data version with all vars. #
+#Note: Cols not in same order as in original data set.#
+X.cont.new = cbind(X.gpa.filled[,1:3], X.score.filled, X.sat.filled, X.act.filled, X.gpa.filled[,4])#
+colnames(X.cont.new) = colnames(X)#
+data.cont.new = cbind(X.cont.new,Y=data$Y)	#Save new imputed data.#
+data.cont.old = cbind(X,Y=data$Y)			#Save old data (just continuous predictors).#
+#
+#Optional: Output the new imputed data as an R object.#
+#save(data.cont.new,file="./Data/data_continuous_imputed.Rdata")#
+#
+#Preview reconstructed data.#
+head(data.cont.old)#
+head(round(data.cont.new,3))#
+#
+#Reconstruct entire data set and output, including new imputed variables.#
+#(Includes categorical data also.)#
+data.categorical = data[,-c(cols.continuous.all)][,1:34]	#Save continuous vars, minus y col.#
+data.all.new = cbind(data.categorical,data.cont.new)		#Cbind data set back together.#
+save(data.all.new,file='./Data/data.all.new.Rdata')
+head(data.cont.old)#
+head(round(data.cont.new,3))
+X.cont.new = cbind(X.gpa.filled, X.score.filled, X.sat.filled, X.act.filled)#
+colnames(X.cont.new) = colnames(X)#
+data.cont.new = cbind(X.cont.new,Y=data$Y)	#Save new imputed data.#
+data.cont.old = cbind(X,Y=data$Y)			#Save old data (just continuous predictors).#
+#
+#Optional: Output the new imputed data as an R object.#
+#save(data.cont.new,file="./Data/data_continuous_imputed.Rdata")#
+#
+#Preview reconstructed data.#
+head(data.cont.old)#
+head(round(data.cont.new,3))
+head(X.gpa.filled)
+X.cont.new = cbind(X.gpa.filled, X.score.filled, X.sat.filled, X.act.filled)
+head(X.cont.new)
+colnames(X.cont.new) = colnames(X)#
+data.cont.new = cbind(X.cont.new,Y=data$Y)	#Save new imputed data.#
+data.cont.old = cbind(X,Y=data$Y)			#Save old data (just continuous predictors).#
+#
+#Optional: Output the new imputed data as an R object.#
+#save(data.cont.new,file="./Data/data_continuous_imputed.Rdata")#
+#
+#Preview reconstructed data.#
+head(data.cont.old)#
+head(round(data.cont.new,3))
+head(X.gpa.filled)
+X.cont.new = cbind(X.gpa.filled[,1:4], X.score.filled, X.sat.filled, X.act.filled,X.gpa[,5:11])#
+colnames(X.cont.new) = colnames(X)
+X.cont.new = cbind(X.gpa.filled[,1:4], X.score.filled, X.sat.filled, X.act.filled,X.gpa.filled[,5:11])#
+colnames(X.cont.new) = colnames(X)
+dim(X.gpa.filled)
+X.cont.new = cbind(X.gpa.filled[,1:4], X.score.filled, X.sat.filled, X.act.filled,X.gpa.filled[,5:10])#
+colnames(X.cont.new) = colnames(X)
+head(X.cont.new)
+data.cont.new = cbind(X.cont.new,Y=data$Y)	#Save new imputed data.#
+data.cont.old = cbind(X,Y=data$Y)			#Save old data (just continuous predictors).#
+#
+#Optional: Output the new imputed data as an R object.#
+#save(data.cont.new,file="./Data/data_continuous_imputed.Rdata")#
+#
+#Preview reconstructed data.#
+head(data.cont.old)#
+head(round(data.cont.new,3))
+data.categorical = data[,-c(cols.continuous.all)][,1:34]	#Save continuous vars, minus y col.#
+data.all.new = cbind(data.categorical,data.cont.new)
+data.categorical = data[,-c(cols.continuous.all)]
+head(data.categorical)
+dim(data.categorical)
+data.categorical = data[,-c(cols.continuous.all)][,1:28]	#Save continuous vars, minus y col.#
+data.all.new = cbind(data.categorical,data.cont.new)
+head(data.all.new)
+save(data.all.new,file='./Data/data.all.new.Rdata')
+head(data)
+which(data$YEAR==2014)
+head(which(data$YEAR==2014))
+range(which(data$YEAR==2014))
+train.rows = which(data$YEAR==2014)#
+#
+train.missing = data.cont.old[train.rows,]#
+test.missing = data.cont.old[-train.rows,]#
+#
+train.filled = data.cont.new[train.rows,]#
+test.filled = data.cont.new[-train.rows,]
+head(train.missing)
+#Test error for data with missing values.#
+lm.with.missing = glm(Y ~ ., family=binomial,data=as.data.frame(train.missing))#
+pred.missing = predict.glm(lm.with.missing,newdata=as.data.frame(test.missing[,-29]),type='response')#
+yhat.missing = ifelse(pred.missing >= .5,1,0)#
+#
+yhat.temp = yhat.missing	#To handle values that are predicted as NA due to missing data.#
+yhat.temp[is.na(yhat.missing)] = 999#
+test.err.missing = sum(test.missing[,29] != yhat.temp) / length(yhat.missing)#
+test.err.missing#
+#
+paste(sum(is.na(yhat.missing)),'out of ',length(yhat.missing),' values predicted as NA due to missing data.')
+head(test.missing)
+dim(test.missing)
+#Test error for data with missing values.#
+lm.with.missing = glm(Y ~ ., family=binomial,data=as.data.frame(train.missing))#
+pred.missing = predict.glm(lm.with.missing,newdata=as.data.frame(test.missing[,-35]),type='response')#
+yhat.missing = ifelse(pred.missing >= .5,1,0)#
+#
+yhat.temp = yhat.missing	#To handle values that are predicted as NA due to missing data.#
+yhat.temp[is.na(yhat.missing)] = 999#
+test.err.missing = sum(test.missing[,29] != yhat.temp) / length(yhat.missing)#
+test.err.missing#
+#
+paste(sum(is.na(yhat.missing)),'out of ',length(yhat.missing),' values predicted as NA due to missing data.')
+lm.with.missing = glm(Y ~ ., family=binomial,data=as.data.frame(train.missing))#
+pred.missing = predict.glm(lm.with.missing,newdata=as.data.frame(test.missing[,-35]),type='response')#
+yhat.missing = ifelse(pred.missing >= .5,1,0)#
+#
+yhat.temp = yhat.missing	#To handle values that are predicted as NA due to missing data.#
+yhat.temp[is.na(yhat.missing)] = 999#
+test.err.missing = sum(test.missing[,35] != yhat.temp) / length(yhat.missing)#
+test.err.missing#
+#
+paste(sum(is.na(yhat.missing)),'out of ',length(yhat.missing),' values predicted as NA due to missing data.')
+lm.filled = glm(Y ~ ., family=binomial,data=as.data.frame(train.filled))#
+pred.filled = predict.glm(lm.filled,newdata=as.data.frame(test.filled[,-35]),type='response')#
+yhat.filled = ifelse(pred.filled >= .5,1,0)#
+#
+test.err.filled = sum(test.filled[,35] != yhat.filled) / length(yhat.filled)#
+test.err.filled
+#Create a data set of just continuous predictors, which will be used#
+#to impute the means of the missing data.#
+data.cont.means = data[,c(13:16,20:28,30:38,39:44,63)]#
+#Need to strip the 50N out of TRIG.H and call it 50 to calculate means.#
+data.cont.means$TRIG.H[data.cont.means$TRIG.H=="50N"] = 50#
+data.cont.means$TRIG.H = as.numeric(data.cont.means$TRIG.H) #Convert from factor to numeric.#
+#
+#Calculate mean for each continuous predictor.#
+col.means = colMeans(data.cont.means,na.rm=T)#
+#
+#Replace all NA values in each column with the respective column mean.#
+for (i in 1:ncol(data.cont.means)-1){ #-1 because excluding Y, which has no missing values.#
+#
+	temp = data.cont.means[,i]#
+	if (sum(is.na(temp))>0){#
+		temp[is.na(temp)] = col.means[i]#
+		data.cont.means[,i] = temp#
+	}#
+}#
+#
+#Perform logistic regression using means-imputed data set, for comparison.#
+#
+#Set up test and train data sets.#
+train.means = data.cont.means[train.rows,]#
+test.means = data.cont.means[-train.rows,]#
+#
+#Test error for data with mean-imputed values.#
+lm.means = glm(Y ~ ., family=binomial,data=as.data.frame(train.means))#
+pred.means = predict.glm(lm.means,newdata=as.data.frame(test.means[,-29]),type='response')#
+yhat.means = ifelse(pred.means >= .5,1,0)#
+#
+test.err.means = sum(test.means[,29] != yhat.means) / length(yhat.means)#
+test.err.means
+#COMMENTED OUT - Random train/test mixed over 2014 and 2015.#
+train.rows = sample(nrow(X),nrow(X)*.7,replace=F)#
+#
+#USE THIS CODE: Train = 2014, test = 2015.#
+#train.rows = which(data$YEAR==2014)#
+#
+train.missing = data.cont.old[train.rows,]#
+test.missing = data.cont.old[-train.rows,]#
+#
+train.filled = data.cont.new[train.rows,]#
+test.filled = data.cont.new[-train.rows,]#
+#
+#----------------------------------#
+#
+#Test error for data with missing values.#
+lm.with.missing = glm(Y ~ ., family=binomial,data=as.data.frame(train.missing))#
+pred.missing = predict.glm(lm.with.missing,newdata=as.data.frame(test.missing[,-35]),type='response')#
+yhat.missing = ifelse(pred.missing >= .5,1,0)#
+#
+yhat.temp = yhat.missing	#To handle values that are predicted as NA due to missing data.#
+yhat.temp[is.na(yhat.missing)] = 999#
+test.err.missing = sum(test.missing[,35] != yhat.temp) / length(yhat.missing)#
+test.err.missing#
+#
+paste(sum(is.na(yhat.missing)),'out of ',length(yhat.missing),' values predicted as NA due to missing data.')
+#----------------------------------#
+#Test error for data with imputed values.#
+lm.filled = glm(Y ~ ., family=binomial,data=as.data.frame(train.filled))#
+pred.filled = predict.glm(lm.filled,newdata=as.data.frame(test.filled[,-35]),type='response')#
+yhat.filled = ifelse(pred.filled >= .5,1,0)#
+#
+test.err.filled = sum(test.filled[,35] != yhat.filled) / length(yhat.filled)#
+test.err.filled
+#Create a data set of just continuous predictors, which will be used#
+#to impute the means of the missing data.#
+data.cont.means = data[,c(13:16,20:28,30:38,39:44,63)]#
+#Need to strip the 50N out of TRIG.H and call it 50 to calculate means.#
+data.cont.means$TRIG.H[data.cont.means$TRIG.H=="50N"] = 50#
+data.cont.means$TRIG.H = as.numeric(data.cont.means$TRIG.H) #Convert from factor to numeric.#
+#
+#Calculate mean for each continuous predictor.#
+col.means = colMeans(data.cont.means,na.rm=T)#
+#
+#Replace all NA values in each column with the respective column mean.#
+for (i in 1:ncol(data.cont.means)-1){ #-1 because excluding Y, which has no missing values.#
+#
+	temp = data.cont.means[,i]#
+	if (sum(is.na(temp))>0){#
+		temp[is.na(temp)] = col.means[i]#
+		data.cont.means[,i] = temp#
+	}#
+}#
+#
+#Perform logistic regression using means-imputed data set, for comparison.#
+#
+#Set up test and train data sets.#
+train.means = data.cont.means[train.rows,]#
+test.means = data.cont.means[-train.rows,]#
+#
+#Test error for data with mean-imputed values.#
+lm.means = glm(Y ~ ., family=binomial,data=as.data.frame(train.means))#
+pred.means = predict.glm(lm.means,newdata=as.data.frame(test.means[,-35]),type='response')#
+yhat.means = ifelse(pred.means >= .5,1,0)#
+#
+test.err.means = sum(test.means[,35] != yhat.means) / length(yhat.means)#
+test.err.means
+head(train.means)
+dim(train.means)
+data.cont.means = data[,c(13:16,20:28,30:38,39:44,45:50,63)]#
+#Need to strip the 50N out of TRIG.H and call it 50 to calculate means.#
+data.cont.means$TRIG.H[data.cont.means$TRIG.H=="50N"] = 50#
+data.cont.means$TRIG.H = as.numeric(data.cont.means$TRIG.H) #Convert from factor to numeric.#
+#
+#Calculate mean for each continuous predictor.#
+col.means = colMeans(data.cont.means,na.rm=T)#
+#
+#Replace all NA values in each column with the respective column mean.#
+for (i in 1:ncol(data.cont.means)-1){ #-1 because excluding Y, which has no missing values.#
+#
+	temp = data.cont.means[,i]#
+	if (sum(is.na(temp))>0){#
+		temp[is.na(temp)] = col.means[i]#
+		data.cont.means[,i] = temp#
+	}#
+}#
+#
+#Perform logistic regression using means-imputed data set, for comparison.#
+#
+#Set up test and train data sets.#
+train.means = data.cont.means[train.rows,]#
+test.means = data.cont.means[-train.rows,]#
+#
+#Test error for data with mean-imputed values.#
+lm.means = glm(Y ~ ., family=binomial,data=as.data.frame(train.means))#
+pred.means = predict.glm(lm.means,newdata=as.data.frame(test.means[,-35]),type='response')#
+yhat.means = ifelse(pred.means >= .5,1,0)#
+#
+test.err.means = sum(test.means[,35] != yhat.means) / length(yhat.means)#
+test.err.means
+head(data)
+#----------------------------------#
+#1. Identify continuous predictors to be included in the imputation.#
+head(data)#
+#
+#cols.continuous.subset = c(13,14,15,16,18,20,30,39,40,41,42,43,44)#
+#
+cols.continuous.all = c(13:16,18,20:28,30:38,39:44,45:50)  #45-51 are AP scores. 18 is UTMA score.#
+X = data.matrix(data[,cols.continuous.all])  #Subset of just the desired continuous data cols.#
+#
+#Cols.continuous.all includes 21-28 and 31-38, which subset does not.#
+#These cols include the breakdowns of ALEKS-1 and ALEKS-H.#
+#
+	#NOTE: This technique works well when predictors have same scale.  #
+	#If predictors have vastly different scales, X must be scaled #
+	#first to ensure logical predictions.#
+#
+	#Since we are working with a few different groups of predictors, #
+	#each which is related to a certain#
+	#type of test, it makes sense to work in groups.#
+#
+#Some info about how much data is missing:#
+nrow(X) * ncol(X) 	#Total data points in X.#
+sum(is.na(X))		#Total points missing in X.#
+sum(is.na(X)) / (nrow(X) * ncol(X)) #Proportion of data missing in X.#
+#----------------------------------#
+#2. Try imputing all missing values for continuous columns at once.#
+#
+#Scale and center data.  (By hand, so can back-transform.)#
+col.means = colMeans(X,na.rm=T)#
+col.sdevs = sqrt(apply(X,2,function(a) var(a,na.rm=T)))#
+X.scaled = scale(X)#
+#
+#Impute missing values for all continuous predictors at once.#
+pmd = sparse.matrix.factorization.rankK(X.scaled,K=ncol(X),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.filled.scaled = pmd$X.rebuilt#
+#
+head(X.scaled)#
+head(X.filled.scaled)#
+#
+#Reverse scaling.#
+X.filled = (X.filled.scaled * col.sdevs) + col.means#
+colnames(X.filled) = colnames(X)#
+head(X)#
+head(X.filled)#
+#
+#Method fails, ended up with wrong scale on many variables.#
+#This is a common problem, as noted by Hastie et al (1999), as scale
+X.act = data.matrix(data[,18,42:44]) #Just the SAT variables.#
+pmd.act = sparse.matrix.factorization.rankK(X.act,K=ncol(X.act),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.act.filled = pmd.act$X.rebuilt#
+colnames(X.act.filled) = colnames(X.act)#
+#
+head(X.act)#
+head(X.act.filled)
+X.act = data.matrix(data[,c(18,42:44)]) #Just the SAT variables.#
+pmd.act = sparse.matrix.factorization.rankK(X.act,K=ncol(X.act),lambdaU=1000,lambdaV=1000,maxiter=20)#
+X.act.filled = pmd.act$X.rebuilt#
+colnames(X.act.filled) = colnames(X.act)#
+#
+head(X.act)#
+head(X.act.filled)
+par(mfrow=c(2,4))#
+for(i in 1:3){#
+	hist(X.sat[,i],freq=F,main=paste(colnames(X.sat)[i]))#
+	points(density(X.sat.filled[,i]),col='blue',type='l')#
+}#
+for(i in 1:4){#
+	hist(X.act[,i],freq=F,main=paste(colnames(X.act)[i]))#
+	points(density(X.act.filled[,i]),col='blue',type='l')	#
+}
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/SAT_ACT_hist.jpg')#
+par(mfrow=c(2,4))#
+for(i in 1:3){#
+	hist(X.sat[,i],freq=F,main=paste(colnames(X.sat)[i]))#
+	points(density(X.sat.filled[,i]),col='blue',type='l')#
+}#
+for(i in 1:4){#
+	hist(X.act[,i],freq=F,main=paste(colnames(X.act)[i]))#
+	points(density(X.act.filled[,i]),col='blue',type='l')	#
+}#
+dev.off()
+apply(X.act, 2, function(x) range(x,na.rm=T))#
+apply(X.act.filled, 2, function(x) range(x))
+head(X)
+X.cont.new = cbind(X.gpa.filled[,1:4],,X.act.filled[,1] X.score.filled, X.sat.filled, X.act.filled[,2:4],X.gpa.filled[,5:10])#
+colnames(X.cont.new) = colnames(X)#
+data.cont.new = cbind(X.cont.new,Y=data$Y)	#Save new imputed data.#
+data.cont.old = cbind(X,Y=data$Y)
+X.cont.new = cbind(X.gpa.filled[,1:4],X.act.filled[,1], X.score.filled, X.sat.filled, X.act.filled[,2:4],X.gpa.filled[,5:10])#
+colnames(X.cont.new) = colnames(X)#
+data.cont.new = cbind(X.cont.new,Y=data$Y)	#Save new imputed data.#
+data.cont.old = cbind(X,Y=data$Y)			#Save old data (just continuous predictors).#
+#
+#Optional: Output the new imputed data as an R object.#
+#save(data.cont.new,file="./Data/data_continuous_imputed.Rdata")#
+#
+#Preview reconstructed data.#
+head(data.cont.old)#
+head(round(data.cont.new,3))
+#Reconstruct entire data set and output, including new imputed variables.#
+#(Includes categorical data also.)#
+data.categorical = data[,-c(cols.continuous.all)][,1:28]	#Save continuous vars, minus y col.#
+data.all.new = cbind(data.categorical,data.cont.new)		#Cbind data set back together.#
+save(data.all.new,file='./Data/data.all.new.Rdata')
+head(data.all.new)
+#COMMENTED OUT - Random train/test mixed over 2014 and 2015.#
+train.rows = sample(nrow(X),nrow(X)*.7,replace=F)#
+#
+#USE THIS CODE: Train = 2014, test = 2015.#
+#train.rows = which(data$YEAR==2014)#
+#
+train.missing = data.cont.old[train.rows,]#
+test.missing = data.cont.old[-train.rows,]#
+#
+train.filled = data.cont.new[train.rows,]#
+test.filled = data.cont.new[-train.rows,]#
+#
+#----------------------------------#
+#
+#Test error for data with missing values.#
+lm.with.missing = glm(Y ~ ., family=binomial,data=as.data.frame(train.missing))#
+pred.missing = predict.glm(lm.with.missing,newdata=as.data.frame(test.missing[,-35]),type='response')#
+yhat.missing = ifelse(pred.missing >= .5,1,0)#
+#
+yhat.temp = yhat.missing	#To handle values that are predicted as NA due to missing data.#
+yhat.temp[is.na(yhat.missing)] = 999#
+test.err.missing = sum(test.missing[,35] != yhat.temp) / length(yhat.missing)#
+test.err.missing
+y_idx = which(colnames(data.all.new)=="Y")
+y_idx
+head(data.all.new)
+y_idx = ncol(data.all.new) #Since Y is last column.
+y_idx
+dim(data.all.new)
+dim(test.missing)
+#----------------------------------#
+y_idx = ncol(train.missing)
+y_idx
+#COMMENTED OUT - Random train/test mixed over 2014 and 2015.#
+train.rows = sample(nrow(X),nrow(X)*.7,replace=F)#
+#
+#USE THIS CODE: Train = 2014, test = 2015.#
+#train.rows = which(data$YEAR==2014)#
+#
+train.missing = data.cont.old[train.rows,]#
+test.missing = data.cont.old[-train.rows,]#
+#
+train.filled = data.cont.new[train.rows,]#
+test.filled = data.cont.new[-train.rows,]#
+#
+#----------------------------------#
+y_idx = ncol(train.missing) #Since Y is last column.#
+#Test error for data with missing values.#
+lm.with.missing = glm(Y ~ ., family=binomial,data=as.data.frame(train.missing))#
+pred.missing = predict.glm(lm.with.missing,newdata=as.data.frame(test.missing[,-y_idx]),type='response')#
+yhat.missing = ifelse(pred.missing >= .5,1,0)#
+#
+yhat.temp = yhat.missing	#To handle values that are predicted as NA due to missing data.#
+yhat.temp[is.na(yhat.missing)] = 999#
+test.err.missing = sum(test.missing[,y_idx] != yhat.temp) / length(yhat.missing)#
+test.err.missing
+#----------------------------------#
+#Test error for data with imputed values.#
+lm.filled = glm(Y ~ ., family=binomial,data=as.data.frame(train.filled))#
+pred.filled = predict.glm(lm.filled,newdata=as.data.frame(test.filled[,-y_idx]),type='response')#
+yhat.filled = ifelse(pred.filled >= .5,1,0)#
+#
+test.err.filled = sum(test.filled[,y_idx] != yhat.filled) / length(yhat.filled)#
+test.err.filled
+#Create a data set of just continuous predictors, which will be used#
+#to impute the means of the missing data.#
+data.cont.means = data[,c(13:16,20:28,30:38,39:44,45:50,63)]#
+#Need to strip the 50N out of TRIG.H and call it 50 to calculate means.#
+data.cont.means$TRIG.H[data.cont.means$TRIG.H=="50N"] = 50#
+data.cont.means$TRIG.H = as.numeric(data.cont.means$TRIG.H) #Convert from factor to numeric.#
+#
+#Calculate mean for each continuous predictor.#
+col.means = colMeans(data.cont.means,na.rm=T)#
+#
+#Replace all NA values in each column with the respective column mean.#
+for (i in 1:ncol(data.cont.means)-1){ #-1 because excluding Y, which has no missing values.#
+#
+	temp = data.cont.means[,i]#
+	if (sum(is.na(temp))>0){#
+		temp[is.na(temp)] = col.means[i]#
+		data.cont.means[,i] = temp#
+	}#
+}#
+#
+#Perform logistic regression using means-imputed data set, for comparison.#
+#
+#Set up test and train data sets.#
+train.means = data.cont.means[train.rows,]#
+test.means = data.cont.means[-train.rows,]#
+#
+#Test error for data with mean-imputed values.#
+lm.means = glm(Y ~ ., family=binomial,data=as.data.frame(train.means))#
+pred.means = predict.glm(lm.means,newdata=as.data.frame(test.means[,-y_idx]),type='response')#
+yhat.means = ifelse(pred.means >= .5,1,0)#
+#
+test.err.means = sum(test.means[,y_idx] != yhat.means) / length(yhat.means)#
+test.err.means
+#Create a data set of just continuous predictors, which will be used#
+#to impute the means of the missing data.#
+data.cont.means = data[,c(13:16,18,20:28,30:38,39:44,45:50,63)]#
+#Need to strip the 50N out of TRIG.H and call it 50 to calculate means.#
+data.cont.means$TRIG.H[data.cont.means$TRIG.H=="50N"] = 50#
+data.cont.means$TRIG.H = as.numeric(data.cont.means$TRIG.H) #Convert from factor to numeric.#
+#
+#Calculate mean for each continuous predictor.#
+col.means = colMeans(data.cont.means,na.rm=T)#
+#
+#Replace all NA values in each column with the respective column mean.#
+for (i in 1:ncol(data.cont.means)-1){ #-1 because excluding Y, which has no missing values.#
+#
+	temp = data.cont.means[,i]#
+	if (sum(is.na(temp))>0){#
+		temp[is.na(temp)] = col.means[i]#
+		data.cont.means[,i] = temp#
+	}#
+}#
+#
+#Perform logistic regression using means-imputed data set, for comparison.#
+#
+#Set up test and train data sets.#
+train.means = data.cont.means[train.rows,]#
+test.means = data.cont.means[-train.rows,]#
+#
+#Test error for data with mean-imputed values.#
+lm.means = glm(Y ~ ., family=binomial,data=as.data.frame(train.means))#
+pred.means = predict.glm(lm.means,newdata=as.data.frame(test.means[,-y_idx]),type='response')#
+yhat.means = ifelse(pred.means >= .5,1,0)#
+#
+test.err.means = sum(test.means[,y_idx] != yhat.means) / length(yhat.means)#
+test.err.means
