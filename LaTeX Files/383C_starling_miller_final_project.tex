@@ -106,7 +106,7 @@ A relatively new solution uses properties of penalized matrix decomposition to i
 
 \section{Proposed Work}
 
-We will first summarize the methodology from [7].  Second, we will present two simulated examples to illustrate how the method performs both missing data imputation and variable selection via sparsity.  Third, we will illustrate how the method can be used for feature selection.  Fourth, we impute the missing data values using the penalized matrix decomposition methodology and discuss improvements in a logistic regression model, including comparison to two other methods.  Fifth, we will impute missing categorical values by imputing the mode and compare this to imputing an explicit ``missing'' value.  Last, we will use the best of these methods to build several models and compare them.
+We will first summarize the methodology from [7].  Second, we will present two simulated examples to illustrate how the method performs both missing data imputation and variable selection via sparsity.  Third, we impute the missing data values using the penalized matrix decomposition methodology and discuss improvements in a logistic regression model, including comparison to two other methods.  Fourth, we will illustrate how the penalized matrix decomposition method can be used for feature selection.  Fifth, we will impute missing categorical values by imputing the mode and compare this to imputing an explicit ``missing'' value.  Last, we will use the best of these methods to build several models which include both categorical and continuous predictors and compare them.
 
 \section{Experiment}
 
@@ -193,6 +193,8 @@ This example illustrates using penalized matrix decomposition to impute missing 
 \end{lstlisting}
 \end{minipage}
 
+The penalized matrix decomposition method imputes the missing values, while preserving the non-missing values.\\
+
 \subsection{Example: Illustrating Feature Selection}
 
 Decreasing the $\lambda$ penalties increases sparsity, effectively selecting a limited number of non-zero elements of $U$ and $V$, leading to a reconstructed $X$ matrix, where $X = U*D*t(V)$, with a limited number of columns containing non-zero elements.
@@ -220,9 +222,9 @@ This table shows the number of columns in the reconstructed $X = U*D*t(V)$ matri
 
 \subsection{Missing Data Imputation for Continuous Predictors}
 
-After imputing the continuous predictor data using penalized matrix factorization, a few checks were performed to verify reasonableness.
+The penalized matrix decomposition method was performed on the scaled continuous predictor data, with large lambda penalty values as to avoid inducing sparsity.  After imputing the continuous predictor data using penalized matrix factorization, a few checks were performed to verify reasonableness.
 
-First, we generated histograms of the raw data for each continuous predictor, with the kernel density estimate of the predictor including imputed data overlaid in blue.  This is a check to ensure that imputing the data is not significantly changing the shape of the distribution of each predictor. The histograms verify that the imputed data is not significantly altering the distribution of any of the predictors.
+First, we generated histograms of the raw data for each continuous predictor, with the kernel density estimate of the predictor including imputed data overlaid in blue.  This is a check to ensure that imputing the data is not significantly changing the shape of the distribution of each predictor. The histograms verify that the imputed data is not significantly altering the distribution of any of the predictors.  A sample of the histograms are shown below.
 
 \begin{figure}[htp!]
   \centering
@@ -232,7 +234,7 @@ First, we generated histograms of the raw data for each continuous predictor, wi
   \caption{Histograms of imputed values for GPA-related predictors \label{fig:1}}
 \end{figure}
 
-All imputed variable ranges were checked for reasonableness as well.  Below is an example of checking the ranges of imputed predictors for reasonableness for the SAT-related predictors.
+All imputed variable ranges were checked for reasonableness as well, since the continuous predictors represent variables such as GPA, SAT and ACT test scores, where imputed values must be within a specific range of allowable values in order to be  plausible.  Below is an example of checking the ranges of imputed predictors for reasonableness for the SAT-related predictors.
 
 \begin{table}[H]
   \caption{Imputed SAT Range Checks}
@@ -252,7 +254,7 @@ All imputed variable ranges were checked for reasonableness as well.  Below is a
   \end{tabular}
 \end{table}
 
-Let us now compare the results of performing logistic regression using three methods of imputation.  We split the data into a training set (70\%) and a test set (30\%).  This split was performed for both the original data and the imputed data, yielding two training sets and two test sets.
+Let us now use a logistic regression for the continuous predictors only, to compare the results of the penalized matrix decomposition for missing value imputation versus the raw continuous predictor data and two other methods of imputation.  We split the data into a training set (70\%) and a test set (30\%).  This split was performed for both the original data and the imputed data, yielding two training sets and two test sets.
 
 A logistic regression was performed on the training data with missing values and fit to the test data with missing values.  The test error was 0.31.  A second logistic regression was performed, this time using the training date with imputed values and fit to the test data with imputed values.  The test error was 0.21.
 
