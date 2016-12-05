@@ -443,9 +443,12 @@ interesting.predictors[[min]]
 n.nonzero.cols[min]
 
 #Plot test error as a function of number of predictors.
+jpeg(file='/Users/jennstarling/UTAustin/2016_Fall_SDS 383C_Statistical Modeling 1/Final Project/LaTeX Files/test.errs.jpg')
 plot(n.nonzero.cols,test.errors,type='l',col='blue',main='Test Error vs Number of Predictors',
 	xlab='Number of Predictors',ylab='Test Error')
 abline(h=.2159,col='black')
+legend(20,.25,lty=c(1,1),col=c('blue','black'),legend=c('Test error','Full model test error'))
+dev.off()
 
 npred = lapply(interesting.predictors,length)
 
